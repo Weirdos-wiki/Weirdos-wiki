@@ -2,6 +2,7 @@
 """把 content/ 里的 Markdown 生成 dist/ 里的静态网页。
 
 只依赖 Python 标准库。修改页面内容后运行 build.bat（或 python build.py）即可。
+页面骨架来自 templates/layout.html，改外观时改那个文件即可。
 """
 
 from __future__ import annotations
@@ -16,11 +17,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 CONTENT_DIR = ROOT / "content"
 ASSETS_DIR = ROOT / "assets"
+TEMPLATE_DIR = ROOT / "templates"
 DIST_DIR = ROOT / "dist"
+LAYOUT_TEMPLATE = TEMPLATE_DIR / "layout.html"
 
 SITE_NAME = "神人百科"
 REPO_URL = "https://github.com/Weirdos-wiki/Weirdos-wiki"
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+PLACEHOLDER_RE = re.compile(r"\{\{([A-Z_]+)\}\}")
 
 
 class BuildError(Exception):
@@ -486,7 +490,7 @@ def markdown_to_html(source: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 页面模板
+# 页面模板（读取 templates/layout.html）
 # ---------------------------------------------------------------------------
 
 
@@ -497,48 +501,50 @@ def display_path(path: Path) -> str:
         return str(path)
 
 
+def make_description(text: str, limit: int = 80) -> str:
+    plain = re.sub(r"[#>*`\-|\[\]()!]", " ", text)
+    plain = re.sub(r"\s+", " ", plain).strip()
+    return plain[:limit]
+
+
 def layout(
     *,
     title: str,
     rel: str,
     content: str,
     body_class: str = "",
+    description: str = "",
 ) -> str:
     full_title = SITE_NAME if title == SITE_NAME else f"{title} · {SITE_NAME}"
-    return f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{escape_text(full_title)}</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%23111111'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="{rel}assets/style.css">
-</head>
-<body class="{body_class}">
-  <a class="skip-link" href="#main">跳到正文</a>
-  <header class="topbar">
-    <div class="shell topbar-inner">
-      <a class="brand" href="{rel}index.html">
-        <span class="brand-mark" aria-hidden="true"></span>
-        <span>{SITE_NAME}</span>
-      </a>
-      <nav class="topnav" aria-label="主导航">
-        <a href="{rel}index.html">首页</a>
-        <a href="{rel}index.html#index">页面索引</a>
-        <a class="topnav-repo" href="{REPO_URL}" target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a>
-      </nav>
-    </div>
-  </header>
-  {content}
-  <footer class="site-footer">
-    <div class="shell footer-inner">
-      <p><strong>{SITE_NAME}</strong></p>
-      <a href="{rel}index.html#index">页面索引 ↑</a>
-    </div>
-  </footer>
-</body>
-</html>
-"""
+
+    if not LAYOUT_TEMPLATE.is_file():
+        raise BuildError(
+            "找不到 templates/layout.html。请确认模板文件没有删除或移动；"
+            "它定义了整站页面的骨架。"
+        )
+
+    template = LAYOUT_TEMPLATE.read_text(encoding="utf-8")
+
+    values = {
+        "TITLE": escape_text(full_title),
+        "DESCRIPTION": escape_attr(description or full_title),
+        "REL": rel,
+        "BODY_CLASS": body_class,
+        "CONTENT": content,
+        "SITE_NAME": SITE_NAME,
+        "REPO_URL": REPO_URL,
+    }
+
+    def replace(match: re.Match[str]) -> str:
+        key = match.group(1)
+        if key not in values:
+            raise BuildError(
+                f"templates/layout.html 里有未知占位符 {{{{ {key} }}}}。"
+                f"可用的是：{', '.join(sorted(values))}。"
+            )
+        return values[key]
+
+    return PLACEHOLDER_RE.sub(replace, template)
 
 
 def render_home(sections: list[Section]) -> str:
@@ -552,6 +558,7 @@ def render_home(sections: list[Section]) -> str:
         </a>"""
         )
 
+    page_count = sum(len(section.pages) for section in sections)
     content = f"""<main id="main">
     <section class="hero shell">
       <h1>{SITE_NAME}</h1>
@@ -571,6 +578,7 @@ def render_home(sections: list[Section]) -> str:
         rel="",
         content=content,
         body_class="home",
+        description=f"{SITE_NAME}：{len(sections)} 个分区，{page_count} 篇条目。",
     )
 
 
@@ -629,6 +637,7 @@ def render_section(section: Section) -> str:
         rel="../",
         content=content,
         body_class="inner",
+        description=make_description(section.body) or f"{SITE_NAME} · {section.title}",
     )
 
 
@@ -691,6 +700,7 @@ def render_page(page: Page, page_index: int) -> str:
         rel="../",
         content=content,
         body_class="inner",
+        description=make_description(page.body) or f"{SITE_NAME} · {page.title}",
     )
 
 
@@ -713,6 +723,12 @@ def copy_content_assets(source: Path, destination: Path) -> None:
 
 
 def build() -> None:
+    if not LAYOUT_TEMPLATE.is_file():
+        raise BuildError(
+            "找不到 templates/layout.html。整站页面骨架由它定义，"
+            "请创建该文件后再生成。"
+        )
+
     sections = load_site()
 
     if DIST_DIR.exists():
